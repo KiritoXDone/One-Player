@@ -3,6 +3,7 @@ package one.next.player.feature.player
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -39,6 +40,7 @@ import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import one.next.player.core.common.extensions.getMediaContentUri
+import one.next.player.core.model.ScreenOrientation
 import one.next.player.core.ui.theme.NextPlayerTheme
 import one.next.player.feature.player.extensions.registerForSuspendActivityResult
 import one.next.player.feature.player.extensions.setExtras
@@ -79,6 +81,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        presetVideoOrientation()
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
@@ -331,5 +334,26 @@ class PlayerActivity : AppCompatActivity() {
 
     fun removeOnWindowAttributesChangedListener(listener: Consumer<WindowManager.LayoutParams?>) {
         onWindowAttributesChangedListener.remove(listener)
+    }
+
+    // 在 controller 连接前根据数据库预设方向，避免竖屏闪烁
+    private fun presetVideoOrientation() {
+        val prefs = playerPreferences ?: return
+        if (prefs.playerScreenOrientation != ScreenOrientation.VIDEO_ORIENTATION) return
+        val uri = intent.data ?: return
+        lifecycleScope.launch(Dispatchers.IO) {
+            val video = viewModel.getVideoByUri(uri.toString()) ?: return@launch
+            if (video.width <= 0 || video.height <= 0) return@launch
+            val orientation = if (video.height >= video.width) {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
+            withContext(Dispatchers.Main) {
+                if (requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
+                    requestedOrientation = orientation
+                }
+            }
+        }
     }
 }

@@ -11,6 +11,9 @@ private const val MEDIA_METADATA_SUBTITLE_TRACK_INDEX_KEY = "subtitle_track_inde
 private const val MEDIA_METADATA_VIDEO_ZOOM_KEY = "media_metadata_video_zoom"
 private const val MEDIA_METADATA_SUBTITLE_DELAY_KEY = "media_metadata_subtitle_delay"
 private const val MEDIA_METADATA_SUBTITLE_SPEED_KEY = "media_metadata_subtitle_speed"
+private const val MEDIA_METADATA_VIDEO_WIDTH_KEY = "media_metadata_video_width"
+private const val MEDIA_METADATA_VIDEO_HEIGHT_KEY = "media_metadata_video_height"
+private const val MEDIA_METADATA_VIDEO_ROTATION_KEY = "media_metadata_video_rotation"
 
 private fun Bundle.setExtras(
     positionMs: Long?,
@@ -20,6 +23,9 @@ private fun Bundle.setExtras(
     subtitleTrackIndex: Int?,
     subtitleDelayMilliseconds: Long? = null,
     subtitleSpeed: Float? = null,
+    videoWidth: Int? = null,
+    videoHeight: Int? = null,
+    videoRotation: Int? = null,
 ) = apply {
     positionMs?.let { putLong(MEDIA_METADATA_POSITION_KEY, it) }
     videoScale?.let { putFloat(MEDIA_METADATA_VIDEO_ZOOM_KEY, it) }
@@ -28,6 +34,9 @@ private fun Bundle.setExtras(
     subtitleTrackIndex?.let { putInt(MEDIA_METADATA_SUBTITLE_TRACK_INDEX_KEY, it) }
     subtitleDelayMilliseconds?.let { putLong(MEDIA_METADATA_SUBTITLE_DELAY_KEY, it) }
     subtitleSpeed?.let { putFloat(MEDIA_METADATA_SUBTITLE_SPEED_KEY, it) }
+    videoWidth?.let { putInt(MEDIA_METADATA_VIDEO_WIDTH_KEY, it) }
+    videoHeight?.let { putInt(MEDIA_METADATA_VIDEO_HEIGHT_KEY, it) }
+    videoRotation?.let { putInt(MEDIA_METADATA_VIDEO_ROTATION_KEY, it) }
 }
 
 fun MediaMetadata.Builder.setExtras(
@@ -38,6 +47,9 @@ fun MediaMetadata.Builder.setExtras(
     subtitleTrackIndex: Int? = null,
     subtitleDelayMilliseconds: Long? = null,
     subtitleSpeed: Float? = null,
+    videoWidth: Int? = null,
+    videoHeight: Int? = null,
+    videoRotation: Int? = null,
 ): MediaMetadata.Builder = setExtras(
     Bundle().setExtras(
         positionMs = positionMs,
@@ -47,6 +59,9 @@ fun MediaMetadata.Builder.setExtras(
         subtitleTrackIndex = subtitleTrackIndex,
         subtitleDelayMilliseconds = subtitleDelayMilliseconds,
         subtitleSpeed = subtitleSpeed,
+        videoWidth = videoWidth,
+        videoHeight = videoHeight,
+        videoRotation = videoRotation,
     ),
 )
 
@@ -92,6 +107,24 @@ val MediaMetadata.subtitleSpeed: Float?
             .takeIf { containsKey(MEDIA_METADATA_SUBTITLE_SPEED_KEY) }
     }
 
+val MediaMetadata.videoWidth: Int?
+    get() = extras?.run {
+        getInt(MEDIA_METADATA_VIDEO_WIDTH_KEY)
+            .takeIf { containsKey(MEDIA_METADATA_VIDEO_WIDTH_KEY) }
+    }
+
+val MediaMetadata.videoHeight: Int?
+    get() = extras?.run {
+        getInt(MEDIA_METADATA_VIDEO_HEIGHT_KEY)
+            .takeIf { containsKey(MEDIA_METADATA_VIDEO_HEIGHT_KEY) }
+    }
+
+val MediaMetadata.videoRotation: Int?
+    get() = extras?.run {
+        getInt(MEDIA_METADATA_VIDEO_ROTATION_KEY)
+            .takeIf { containsKey(MEDIA_METADATA_VIDEO_ROTATION_KEY) }
+    }
+
 fun MediaItem.copy(
     positionMs: Long? = this.mediaMetadata.positionMs,
     durationMs: Long? = this.mediaMetadata.durationMs,
@@ -101,6 +134,9 @@ fun MediaItem.copy(
     subtitleTrackIndex: Int? = this.mediaMetadata.subtitleTrackIndex,
     subtitleDelayMilliseconds: Long? = this.mediaMetadata.subtitleDelayMilliseconds,
     subtitleSpeed: Float? = this.mediaMetadata.subtitleSpeed,
+    videoWidth: Int? = this.mediaMetadata.videoWidth,
+    videoHeight: Int? = this.mediaMetadata.videoHeight,
+    videoRotation: Int? = this.mediaMetadata.videoRotation,
 ): MediaItem = buildUpon().setMediaMetadata(
     mediaMetadata.buildUpon()
         .setDurationMs(durationMs)
@@ -113,6 +149,9 @@ fun MediaItem.copy(
                 subtitleTrackIndex = subtitleTrackIndex,
                 subtitleDelayMilliseconds = subtitleDelayMilliseconds,
                 subtitleSpeed = subtitleSpeed,
+                videoWidth = videoWidth,
+                videoHeight = videoHeight,
+                videoRotation = videoRotation,
             ),
         ).build(),
 ).build()

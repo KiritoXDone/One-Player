@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.net.toUri
 import androidx.media3.common.AudioAttributes
@@ -281,10 +282,24 @@ class PlayerService : MediaSessionService() {
             super.onRenderedFirstFrame()
             val player = mediaSession?.player ?: return
             val currentMediaItem = player.currentMediaItem ?: return
-            // Update the media metadata duration so that it will be used later in position discontinuity handling
+
+            // 从 track format 获取视频尺寸，通过 metadata extras 传递给 MediaController
+            val format = player.currentTracks.groups
+                .firstOrNull { it.type == C.TRACK_TYPE_VIDEO }
+                ?.getTrackFormat(0)
+            val width = format?.width ?: 0
+            val height = format?.height ?: 0
+            val rotation = format?.rotationDegrees ?: 0
+            Log.d(TAG, "onRenderedFirstFrame: format=${width}x${height}, rot=$rotation, duration=${player.duration}")
+
             player.replaceMediaItem(
                 player.currentMediaItemIndex,
-                currentMediaItem.copy(durationMs = player.duration),
+                currentMediaItem.copy(
+                    durationMs = player.duration,
+                    videoWidth = width,
+                    videoHeight = height,
+                    videoRotation = rotation,
+                ),
             )
         }
 
@@ -678,6 +693,9 @@ class PlayerService : MediaSessionService() {
                 val subtitleTrackIndex = mediaItem.mediaMetadata.subtitleTrackIndex ?: videoState?.subtitleTrackIndex
                 val subtitleDelay = mediaItem.mediaMetadata.subtitleDelayMilliseconds ?: videoState?.subtitleDelayMilliseconds
                 val subtitleSpeed = mediaItem.mediaMetadata.subtitleSpeed ?: videoState?.subtitleSpeed
+                // MediaStore 返回的宽高已考虑 rotation，用于预设屏幕方向
+                val videoWidth = video?.width
+                val videoHeight = video?.height
 
                 mediaItem.buildUpon().apply {
                     setSubtitleConfigurations(
@@ -698,6 +716,8 @@ class PlayerService : MediaSessionService() {
                                 subtitleTrackIndex = subtitleTrackIndex,
                                 subtitleDelayMilliseconds = subtitleDelay,
                                 subtitleSpeed = subtitleSpeed,
+                                videoWidth = videoWidth,
+                                videoHeight = videoHeight,
                             )
                         }.build(),
                     )

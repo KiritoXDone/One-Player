@@ -46,6 +46,8 @@ class PlayerViewModel @Inject constructor(
 
     suspend fun getPlaylistFromUri(uri: Uri): List<Video> = getSortedPlaylistUseCase.invoke(uri)
 
+    suspend fun getVideoByUri(uri: String): Video? = mediaRepository.getVideoByUri(uri)
+
     fun updateVideoZoom(uri: String, zoom: Float) {
         viewModelScope.launch {
             mediaRepository.updateMediumZoom(uri, zoom)
