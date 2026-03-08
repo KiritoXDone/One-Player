@@ -7,7 +7,7 @@
 [![English](https://img.shields.io/badge/English-red)](../../README.md)
 [![简体中文](https://img.shields.io/badge/简体中文-blue)](README.zh-CN.md)
 
-[![Android 31+](https://img.shields.io/badge/Android-31+-34A853?logo=android&logoColor=white)](https://developer.android.com)
+[![Android 29+](https://img.shields.io/badge/Android-29+-34A853?logo=android&logoColor=white)](https://developer.android.com)
 [![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![Jetpack Compose](https://img.shields.io/badge/Compose-4285F4?logo=jetpackcompose&logoColor=white)](https://developer.android.com/compose)
 [![Media3](https://img.shields.io/badge/Media3-FF6F00?logo=android&logoColor=white)](https://developer.android.com/media/media3)

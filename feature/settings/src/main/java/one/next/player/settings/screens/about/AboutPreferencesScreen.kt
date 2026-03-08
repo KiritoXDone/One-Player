@@ -32,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -43,16 +44,21 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.pm.PackageInfoCompat
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import one.next.player.core.common.extensions.appIcon
 import one.next.player.core.ui.R
+import one.next.player.core.ui.components.ClickablePreferenceItem
 import one.next.player.core.ui.components.ListSectionTitle
 import one.next.player.core.ui.components.NextTopAppBar
 import one.next.player.core.ui.components.PreferenceItem
+import one.next.player.core.ui.components.PreferenceSwitch
 import one.next.player.core.ui.designsystem.NextIcons
 import one.next.player.core.ui.extensions.withBottomFallback
 
@@ -61,7 +67,16 @@ import one.next.player.core.ui.extensions.withBottomFallback
 fun AboutPreferencesScreen(
     onLibrariesClick: () -> Unit,
     onNavigateUp: () -> Unit,
+    viewModel: AboutPreferencesViewModel = hiltViewModel(),
 ) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val currentVersionName = remember { context.versionName() }
+
+    LaunchedEffect(uiState.checkForUpdatesOnStartup) {
+        viewModel.maybeAutoCheck(currentVersionName)
+    }
+
     Scaffold(
         topBar = {
             NextTopAppBar(
@@ -88,6 +103,11 @@ fun AboutPreferencesScreen(
             AboutApp(
                 onLibrariesClick = onLibrariesClick,
             )
+            UpdateSection(
+                uiState = uiState,
+                currentVersionName = currentVersionName,
+                onEvent = viewModel::onEvent,
+            )
             ListSectionTitle(text = stringResource(id = R.string.device_info))
             Column(
                 verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
@@ -109,6 +129,54 @@ fun AboutPreferencesScreen(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun UpdateSection(
+    uiState: AboutPreferencesUiState,
+    currentVersionName: String,
+    onEvent: (AboutPreferencesUiEvent) -> Unit,
+) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+
+    ListSectionTitle(text = stringResource(id = R.string.update_check))
+    Column(
+        verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
+    ) {
+        ClickablePreferenceItem(
+            title = stringResource(R.string.check_for_updates),
+            description = updateStatusText(uiState.updateState),
+            icon = NextIcons.Update,
+            onClick = {
+                when (val state = uiState.updateState) {
+                    is UpdateState.UpdateAvailable -> {
+                        uriHandler.openUriOrShowToast(state.releaseUrl, context)
+                    }
+                    UpdateState.Checking -> {}
+                    else -> onEvent(AboutPreferencesUiEvent.CheckForUpdates(currentVersionName))
+                }
+            },
+            isFirstItem = true,
+        )
+        PreferenceSwitch(
+            title = stringResource(R.string.check_updates_on_startup),
+            description = stringResource(R.string.check_updates_on_startup_desc),
+            isChecked = uiState.checkForUpdatesOnStartup,
+            onClick = { onEvent(AboutPreferencesUiEvent.ToggleCheckOnStartup) },
+            isLastItem = true,
+        )
+    }
+}
+
+@Composable
+private fun updateStatusText(state: UpdateState): String = when (state) {
+    UpdateState.Idle -> stringResource(R.string.update_status_idle)
+    UpdateState.Checking -> stringResource(R.string.update_status_checking)
+    UpdateState.UpToDate -> stringResource(R.string.update_status_up_to_date)
+    is UpdateState.UpdateAvailable -> stringResource(R.string.update_status_available, state.latestVersion)
+    UpdateState.Error -> stringResource(R.string.update_status_error)
 }
 
 @Composable
@@ -220,6 +288,10 @@ private fun Context.appVersion(): String {
     val versionCode = PackageInfoCompat.getLongVersionCode(packageInfo)
 
     return "${packageInfo.versionName} ($versionCode)"
+}
+
+private fun Context.versionName(): String {
+    return packageManager.getPackageInfo(packageName, 0).versionName ?: ""
 }
 
 @Composable

@@ -316,4 +316,13 @@
     <string name="restore_settings_failed">恢复设置失败</string>
     <string name="settings_backup_file_name">nextplayer-settings.json</string>
     <string name="exclude">排除</string>
+    <string name="update_check">更新</string>
+    <string name="check_for_updates">检查更新</string>
+    <string name="check_updates_on_startup">打开时自动检查</string>
+    <string name="check_updates_on_startup_desc">打开此页面时自动检查更新</string>
+    <string name="update_status_idle">点按检查最新版本</string>
+    <string name="update_status_checking">正在检查…</string>
+    <string name="update_status_up_to_date">已是最新版本</string>
+    <string name="update_status_available">新版本 %1$s 可用，点按查看</string>
+    <string name="update_status_error">检查失败，点按重试</string>
 </resources>

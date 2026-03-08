@@ -28,6 +28,7 @@ data class ApplicationPreferences(
     // Thumbnail generation
     val thumbnailGenerationStrategy: ThumbnailGenerationStrategy = ThumbnailGenerationStrategy.FRAME_AT_PERCENTAGE,
     val thumbnailFramePosition: Float = DEFAULT_THUMBNAIL_FRAME_POSITION,
+    val checkForUpdatesOnStartup: Boolean = false,
 ) {
 
     fun isPathExcluded(path: String): Boolean {
