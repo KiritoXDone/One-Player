@@ -4,6 +4,7 @@ import android.graphics.Rect
 import androidx.annotation.OptIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -40,18 +41,34 @@ fun PlayerContentFrame(
     subtitleConfiguration: SubtitleConfiguration,
 ) {
     val presentationState = rememberPresentationState(player)
+    val density = LocalDensity.current
+
+    // presentationState.videoSizeDp 依赖 onVideoSizeChanged，ASS wrapper 不触发该回调
+    // 从 metadata extras 中的视频尺寸作为后备
+    val sourceSizeDp = presentationState.videoSizeDp?.let { size ->
+        size.copy(
+            width = with(density) { size.width.toDp().value },
+            height = with(density) { size.height.toDp().value },
+        )
+    } ?: run {
+        val w = videoZoomAndContentScaleState.metadataVideoWidth.toFloat()
+        val h = videoZoomAndContentScaleState.metadataVideoHeight.toFloat()
+        val rotation = videoZoomAndContentScaleState.metadataVideoRotation
+        if (w <= 0f || h <= 0f) return@run null
+        val (dw, dh) = if (rotation == 90 || rotation == 270) h to w else w to h
+        Size(
+            width = with(density) { dw.toDp().value },
+            height = with(density) { dh.toDp().value },
+        )
+    }
+
     PlayerSurface(
         player = player,
         surfaceType = SURFACE_TYPE_SURFACE_VIEW,
         modifier = modifier
             .resizeWithContentScale(
                 contentScale = videoZoomAndContentScaleState.videoContentScale.toContentScale(),
-                sourceSizeDp = presentationState.videoSizeDp?.let { size ->
-                    size.copy(
-                        width = with(LocalDensity.current) { size.width.toDp().value },
-                        height = with(LocalDensity.current) { size.height.toDp().value },
-                    )
-                },
+                sourceSizeDp = sourceSizeDp,
             )
             .onGloballyPositioned {
                 val bounds = it.boundsInWindow()

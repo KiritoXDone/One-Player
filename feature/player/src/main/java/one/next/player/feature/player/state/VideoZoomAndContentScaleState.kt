@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -24,6 +25,9 @@ import kotlinx.coroutines.launch
 import one.next.player.core.model.VideoContentScale
 import one.next.player.feature.player.extensions.copy
 import one.next.player.feature.player.extensions.next
+import one.next.player.feature.player.extensions.videoHeight
+import one.next.player.feature.player.extensions.videoRotation
+import one.next.player.feature.player.extensions.videoWidth
 import one.next.player.feature.player.extensions.videoZoom
 
 @UnstableApi
@@ -80,6 +84,14 @@ class VideoZoomAndContentScaleState(
     var showContentScaleIndicator: Boolean by mutableStateOf(false)
         private set
 
+    // 从 metadata extras 追踪视频尺寸，用于 resizeWithContentScale 的后备值
+    var metadataVideoWidth: Int by mutableIntStateOf(0)
+        private set
+    var metadataVideoHeight: Int by mutableIntStateOf(0)
+        private set
+    var metadataVideoRotation: Int by mutableIntStateOf(0)
+        private set
+
     private var showContentScaleJob: Job? = null
 
     fun onVideoContentScaleChanged(newContentScale: VideoContentScale) {
@@ -132,12 +144,21 @@ class VideoZoomAndContentScaleState(
     }
 
     suspend fun observe() {
+        updateFromMetadata()
         zoom = player.currentMediaItem?.mediaMetadata?.videoZoom ?: 1f
         player.listen { events ->
             if (events.contains(Player.EVENT_MEDIA_METADATA_CHANGED)) {
+                updateFromMetadata()
                 zoom = player.currentMediaItem?.mediaMetadata?.videoZoom ?: 1f
             }
         }
+    }
+
+    private fun updateFromMetadata() {
+        val metadata = player.currentMediaItem?.mediaMetadata ?: return
+        metadataVideoWidth = metadata.videoWidth ?: 0
+        metadataVideoHeight = metadata.videoHeight ?: 0
+        metadataVideoRotation = metadata.videoRotation ?: 0
     }
 
     private fun updateVideoScaleMetadataAndSendEvent(zoom: Float = this.zoom) {
