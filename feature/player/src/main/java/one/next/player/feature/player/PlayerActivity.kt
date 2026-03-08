@@ -201,20 +201,19 @@ class PlayerActivity : AppCompatActivity() {
 
     private suspend fun playVideo(uri: Uri) = withContext(Dispatchers.Default) {
         val mediaContentUri = getMediaContentUri(uri)
+        val playbackUri = mediaContentUri ?: uri
         val playlist = playerApi.getPlaylist().takeIf { it.isNotEmpty() }
-            ?: mediaContentUri?.let { mediaUri ->
-                viewModel.getPlaylistFromUri(mediaUri)
-                    .map { it.uriString }
-                    .toMutableList()
-                    .apply {
-                        if (!contains(mediaUri.toString())) {
-                            add(index = 0, element = mediaUri.toString())
-                        }
+            ?: viewModel.getPlaylistFromUri(playbackUri)
+                .map { it.uriString }
+                .toMutableList()
+                .apply {
+                    if (!contains(playbackUri.toString())) {
+                        add(index = 0, element = playbackUri.toString())
                     }
-            } ?: listOf(uri.toString())
+                }
 
         val mediaItemIndexToPlay = playlist.indexOfFirst {
-            it == (mediaContentUri ?: uri).toString()
+            it == playbackUri.toString()
         }.takeIf { it >= 0 } ?: 0
 
         val mediaItems = playlist.mapIndexed { index, uri ->
