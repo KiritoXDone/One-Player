@@ -290,9 +290,7 @@ private fun Context.appVersion(): String {
     return "${packageInfo.versionName} ($versionCode)"
 }
 
-private fun Context.versionName(): String {
-    return packageManager.getPackageInfo(packageName, 0).versionName ?: ""
-}
+private fun Context.versionName(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
 
 @Composable
 private fun rememberDeviceArchitecture(): String = remember {

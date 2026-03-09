@@ -4,6 +4,8 @@ import androidx.compose.runtime.Stable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.net.HttpURLConnection
+import java.net.URL
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,8 +16,6 @@ import kotlinx.coroutines.withContext
 import one.next.player.core.common.Logger
 import one.next.player.core.data.repository.PreferencesRepository
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 @HiltViewModel
 class AboutPreferencesViewModel @Inject constructor(
@@ -64,36 +64,35 @@ class AboutPreferencesViewModel @Inject constructor(
         }
     }
 
-    private suspend fun fetchLatestRelease(currentVersion: String): UpdateState =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val connection = URL(RELEASES_URL).openConnection() as HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.setRequestProperty("Accept", "application/vnd.github+json")
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 10_000
+    private suspend fun fetchLatestRelease(currentVersion: String): UpdateState = withContext(Dispatchers.IO) {
+        runCatching {
+            val connection = URL(RELEASES_URL).openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("Accept", "application/vnd.github+json")
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 10_000
 
-                if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                    return@withContext UpdateState.Error
-                }
-
-                val json = connection.inputStream.bufferedReader().use { it.readText() }
-                connection.disconnect()
-                val release = JSONObject(json)
-                val tagName = release.optString("tag_name", "").removePrefix("v")
-                val htmlUrl = release.optString("html_url", "")
-                if (tagName.isEmpty()) return@withContext UpdateState.Error
-
-                if (compareVersions(tagName, currentVersion) > 0) {
-                    UpdateState.UpdateAvailable(latestVersion = tagName, releaseUrl = htmlUrl)
-                } else {
-                    UpdateState.UpToDate
-                }
-            }.getOrElse { throwable ->
-                Logger.logError(TAG, "Failed to check for updates", throwable)
-                UpdateState.Error
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                return@withContext UpdateState.Error
             }
+
+            val json = connection.inputStream.bufferedReader().use { it.readText() }
+            connection.disconnect()
+            val release = JSONObject(json)
+            val tagName = release.optString("tag_name", "").removePrefix("v")
+            val htmlUrl = release.optString("html_url", "")
+            if (tagName.isEmpty()) return@withContext UpdateState.Error
+
+            if (compareVersions(tagName, currentVersion) > 0) {
+                UpdateState.UpdateAvailable(latestVersion = tagName, releaseUrl = htmlUrl)
+            } else {
+                UpdateState.UpToDate
+            }
+        }.getOrElse { throwable ->
+            Logger.logError(TAG, "Failed to check for updates", throwable)
+            UpdateState.Error
         }
+    }
 
     private fun toggleCheckOnStartup() {
         viewModelScope.launch {
