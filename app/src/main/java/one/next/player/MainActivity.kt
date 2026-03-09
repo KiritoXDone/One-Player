@@ -3,10 +3,8 @@ package one.next.player
 import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.SystemBarStyle
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.animation.AnimatedContentTransitionScope
@@ -16,13 +14,10 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -35,15 +30,10 @@ import androidx.navigation.compose.rememberNavController
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.launch
-import one.next.player.core.common.Logger
-import one.next.player.core.common.createManageExternalStorageAccessIntent
-import one.next.player.core.common.hasManageExternalStorageAccess
 import one.next.player.core.common.storagePermission
 import one.next.player.core.media.services.MediaService
 import one.next.player.core.media.sync.MediaSynchronizer
 import one.next.player.core.model.ThemeConfig
-import one.next.player.core.ui.R
-import one.next.player.core.ui.components.NextDialog
 import one.next.player.core.ui.composables.rememberRuntimePermissionState
 import one.next.player.core.ui.theme.NextPlayerTheme
 import one.next.player.navigation.MediaRootRoute
@@ -114,17 +104,6 @@ class MainActivity : AppCompatActivity() {
                     color = MaterialTheme.colorScheme.surface,
                 ) {
                     val storagePermissionState = rememberRuntimePermissionState(permission = storagePermission)
-                    var showAllFilesAccessDialog by remember { mutableStateOf(false) }
-                    var hasShownAllFilesAccessDialog by remember { mutableStateOf(false) }
-                    val manageExternalStorageLauncher = rememberLauncherForActivityResult(
-                        contract = ActivityResultContracts.StartActivityForResult(),
-                    ) {
-                        if (hasManageExternalStorageAccess()) {
-                            Logger.logInfo(TAG, "All files access granted from settings")
-                        } else {
-                            Logger.logInfo(TAG, "All files access is still not granted after returning from settings")
-                        }
-                    }
 
                     LifecycleEventEffect(event = Lifecycle.Event.ON_START) {
                         storagePermissionState.launchPermissionRequest()
@@ -133,41 +112,7 @@ class MainActivity : AppCompatActivity() {
                     LaunchedEffect(key1 = storagePermissionState.isGranted) {
                         if (storagePermissionState.isGranted) {
                             synchronizer.startSync()
-
-                            if (!hasShownAllFilesAccessDialog && !hasManageExternalStorageAccess()) {
-                                hasShownAllFilesAccessDialog = true
-                                showAllFilesAccessDialog = true
-                                Logger.logInfo(TAG, "All files access is missing, prompting the user")
-                            }
                         }
-                    }
-
-                    if (showAllFilesAccessDialog) {
-                        NextDialog(
-                            onDismissRequest = { showAllFilesAccessDialog = false },
-                            title = { Text(text = getString(R.string.all_files_access_title)) },
-                            content = { Text(text = getString(R.string.all_files_access_message)) },
-                            confirmButton = {
-                                TextButton(
-                                    onClick = {
-                                        showAllFilesAccessDialog = false
-                                        Logger.logInfo(TAG, "Opening all files access settings")
-                                        manageExternalStorageLauncher.launch(
-                                            createManageExternalStorageAccessIntent(this@MainActivity),
-                                        )
-                                    },
-                                ) {
-                                    Text(text = getString(R.string.go_to_settings))
-                                }
-                            },
-                            dismissButton = {
-                                TextButton(
-                                    onClick = { showAllFilesAccessDialog = false },
-                                ) {
-                                    Text(text = getString(R.string.not_now))
-                                }
-                            },
-                        )
                     }
 
                     val mainNavController = rememberNavController()
