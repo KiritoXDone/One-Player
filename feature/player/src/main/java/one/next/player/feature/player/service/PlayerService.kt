@@ -164,10 +164,15 @@ class PlayerService : MediaSessionService() {
                 -> {
                     if (newPosition.mediaItem == null || oldMediaItem == newPosition.mediaItem) return
 
+                    val player = mediaSession?.player ?: return
                     val updatedPosition = oldPosition.positionMs.takeIf { reason == DISCONTINUITY_REASON_SEEK } ?: C.TIME_UNSET
-                    mediaSession?.player?.replaceMediaItem(
+                    val mediaItemToUpdate = player.getMediaItemAt(oldPosition.mediaItemIndex)
+                        .takeIf { it.mediaId == oldMediaItem.mediaId }
+                        ?: oldMediaItem
+
+                    player.replaceMediaItem(
                         oldPosition.mediaItemIndex,
-                        oldMediaItem.copy(positionMs = updatedPosition),
+                        mediaItemToUpdate.copy(positionMs = updatedPosition),
                     )
                     serviceScope.launch {
                         mediaRepository.updateMediumPosition(
