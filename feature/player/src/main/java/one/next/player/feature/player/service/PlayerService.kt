@@ -14,6 +14,8 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.ParserException
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Player.DISCONTINUITY_REASON_AUTO_TRANSITION
@@ -22,9 +24,21 @@ import androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.Extractor
+import androidx.media3.extractor.ExtractorInput
+import androidx.media3.extractor.ExtractorOutput
+import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.PositionHolder
+import androidx.media3.extractor.mp4.Mp4Extractor
+import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.session.CommandButton
 import androidx.media3.session.CommandButton.ICON_UNDEFINED
 import androidx.media3.session.MediaSession
@@ -45,6 +59,7 @@ import io.github.peerless2012.ass.media.kt.buildWithAssSupport
 import io.github.peerless2012.ass.media.type.AssRenderType
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -115,6 +130,7 @@ class PlayerService : MediaSessionService() {
 
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var currentVolumeGain: Int = 0
+    private val mediaParserRetried = mutableSetOf<String>()
 
     private val playbackStateListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -290,7 +306,7 @@ class PlayerService : MediaSessionService() {
             val width = format?.width ?: 0
             val height = format?.height ?: 0
             val rotation = format?.rotationDegrees ?: 0
-            Log.d(TAG, "onRenderedFirstFrame: format=${width}x${height}, rot=$rotation, duration=${player.duration}")
+            Log.d(TAG, "onRenderedFirstFrame: format=${width}x$height, rot=$rotation, duration=${player.duration}")
 
             player.replaceMediaItem(
                 player.currentMediaItemIndex,
@@ -346,6 +362,226 @@ class PlayerService : MediaSessionService() {
                 loudnessEnhancer = null
             }
         }
+
+        override fun onPlayerError(error: PlaybackException) {
+            super.onPlayerError(error)
+            retryWithFixedSource(error)
+        }
+    }
+
+    // MP4 容器解析失败时，检测并修复结构问题后以容错模式重试
+    private fun retryWithFixedSource(error: PlaybackException) {
+        if (!hasParserExceptionCause(error)) return
+        val player = mediaSession?.player as? ExoPlayer ?: return
+        val currentItem = player.currentMediaItem ?: return
+        if (!mediaParserRetried.add(currentItem.mediaId)) return
+
+        val mediaId = currentItem.mediaId
+        serviceScope.launch {
+            val uri = mediaId.toUri()
+            val skipRegion = withContext(Dispatchers.IO) { detectDuplicateMoov(uri) }
+
+            withContext(Dispatchers.Main) {
+                val currentPlayer = mediaSession?.player as? ExoPlayer ?: return@withContext
+                if (currentPlayer.playerError == null) return@withContext
+
+                val index = (0 until currentPlayer.mediaItemCount).firstOrNull {
+                    currentPlayer.getMediaItemAt(it).mediaId == mediaId
+                } ?: return@withContext
+
+                val item = currentPlayer.getMediaItemAt(index)
+                val dataSourceFactory = if (skipRegion != null) {
+                    Logger.logDebug(
+                        TAG,
+                        "Duplicate moov at ${skipRegion.start}+${skipRegion.length}, retrying: $mediaId",
+                    )
+                    DataSource.Factory {
+                        GapSkipDataSource(
+                            upstream = DefaultDataSource.Factory(applicationContext)
+                                .createDataSource(),
+                            targetUri = uri,
+                            gapStart = skipRegion.start,
+                            gapLength = skipRegion.length,
+                        )
+                    }
+                } else {
+                    Logger.logDebug(TAG, "Retrying with lenient extractor: $mediaId")
+                    DefaultDataSource.Factory(applicationContext)
+                }
+
+                val mediaSource = DefaultMediaSourceFactory(
+                    dataSourceFactory,
+                    LenientExtractorsFactory(),
+                ).createMediaSource(item)
+
+                currentPlayer.removeMediaItem(index)
+                currentPlayer.addMediaSource(index, mediaSource)
+                currentPlayer.seekTo(index, 0)
+                currentPlayer.prepare()
+                currentPlayer.playWhenReady = true
+            }
+        }
+    }
+
+    private fun hasParserExceptionCause(error: PlaybackException): Boolean {
+        var cause: Throwable? = error.cause
+        repeat(3) {
+            val current = cause ?: return false
+            if (current is ParserException) return true
+            cause = current.cause
+        }
+        return false
+    }
+
+    private data class SkipRegion(val start: Long, val length: Long)
+
+    // 扫描 MP4 顶层 atom，检测连续出现的 moov box
+    private fun detectDuplicateMoov(uri: Uri): SkipRegion? {
+        try {
+            contentResolver.openInputStream(uri)?.use { stream ->
+                var offset = 0L
+                var firstMoovSeen = false
+                val header = ByteArray(8)
+
+                while (true) {
+                    if (!readFully(stream, header)) break
+
+                    val size = ((header[0].toLong() and 0xFF) shl 24) or
+                        ((header[1].toLong() and 0xFF) shl 16) or
+                        ((header[2].toLong() and 0xFF) shl 8) or
+                        (header[3].toLong() and 0xFF)
+                    val type = String(header, 4, 4, Charsets.US_ASCII)
+
+                    if (size < 8) break
+
+                    if (type == "moov") {
+                        if (firstMoovSeen) {
+                            return SkipRegion(start = offset, length = size)
+                        }
+                        firstMoovSeen = true
+                    }
+
+                    if (type == "mdat") break
+
+                    val bodySize = size - 8
+                    var skipped = 0L
+                    while (skipped < bodySize) {
+                        val s = stream.skip(bodySize - skipped)
+                        if (s <= 0) break
+                        skipped += s
+                    }
+                    if (skipped < bodySize) break
+                    offset += size
+                }
+            }
+        } catch (e: Exception) {
+            Logger.logError(TAG, "Failed to scan MP4 structure", e)
+        }
+        return null
+    }
+
+    // DataSource 包装器，读取时透明跳过 [gapStart, gapStart+gapLength) 区间
+    private class GapSkipDataSource(
+        private val upstream: DataSource,
+        private val targetUri: Uri,
+        private val gapStart: Long,
+        private val gapLength: Long,
+    ) : DataSource by upstream {
+
+        private var isTarget = false
+        private var gapCrossed = false
+        private var bytesUntilGap = Long.MAX_VALUE
+        private var currentDataSpec: DataSpec? = null
+
+        override fun open(dataSpec: DataSpec): Long {
+            currentDataSpec = dataSpec
+            isTarget = dataSpec.uri == targetUri
+            if (!isTarget) return upstream.open(dataSpec)
+
+            val virtualPos = dataSpec.position
+            if (virtualPos >= gapStart) {
+                gapCrossed = true
+                bytesUntilGap = Long.MAX_VALUE
+                val adjustedSpec = dataSpec.buildUpon()
+                    .setPosition(virtualPos + gapLength)
+                    .build()
+                return upstream.open(adjustedSpec)
+            }
+
+            gapCrossed = false
+            bytesUntilGap = gapStart - virtualPos
+            val length = upstream.open(dataSpec)
+            if (length == C.LENGTH_UNSET.toLong()) return length
+
+            val physicalEnd = virtualPos + length
+            return when {
+                physicalEnd > gapStart + gapLength -> length - gapLength
+                physicalEnd > gapStart -> gapStart - virtualPos
+                else -> length
+            }
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (!isTarget) return upstream.read(buffer, offset, length)
+
+            if (!gapCrossed && bytesUntilGap <= 0L) {
+                upstream.close()
+                upstream.open(
+                    DataSpec.Builder()
+                        .setUri(currentDataSpec!!.uri)
+                        .setPosition(gapStart + gapLength)
+                        .build(),
+                )
+                gapCrossed = true
+            }
+
+            val toRead = if (!gapCrossed) {
+                minOf(length.toLong(), bytesUntilGap).toInt()
+            } else {
+                length
+            }
+            val bytesRead = upstream.read(buffer, offset, toRead)
+            if (bytesRead > 0 && !gapCrossed) {
+                bytesUntilGap -= bytesRead
+            }
+            return bytesRead
+        }
+
+        override fun close() {
+            isTarget = false
+            upstream.close()
+        }
+    }
+
+    // 容错 ExtractorsFactory，Mp4 使用 LenientMp4Extractor，其余回退到默认实现
+    private class LenientExtractorsFactory : ExtractorsFactory {
+        override fun createExtractors(): Array<Extractor> {
+            val defaults = DefaultExtractorsFactory().createExtractors()
+            return Array(defaults.size + 1) { i ->
+                if (i == 0) LenientMp4Extractor() else defaults[i - 1]
+            }
+        }
+    }
+
+    // 包装 Mp4Extractor，捕获 sample 级别的 ParserException
+    private class LenientMp4Extractor : Extractor {
+
+        private val delegate = Mp4Extractor(SubtitleParser.Factory.UNSUPPORTED)
+
+        override fun sniff(input: ExtractorInput): Boolean = delegate.sniff(input)
+
+        override fun init(output: ExtractorOutput) = delegate.init(output)
+
+        override fun read(input: ExtractorInput, seekPosition: PositionHolder): Int = try {
+            delegate.read(input, seekPosition)
+        } catch (e: ParserException) {
+            Logger.logError(TAG, "Lenient extractor treating error as end of input", e)
+            Extractor.RESULT_END_OF_INPUT
+        }
+
+        override fun seek(position: Long, timeUs: Long) = delegate.seek(position, timeUs)
+
+        override fun release() = delegate.release()
     }
 
     private fun setEnhancerTargetGain(gain: Int) {
@@ -634,6 +870,7 @@ class PlayerService : MediaSessionService() {
             mediaSession = null
         }
         subtitleCacheDir.deleteFiles()
+        mediaParserRetried.clear()
         serviceScope.cancel()
     }
 
@@ -835,6 +1072,16 @@ class PlayerService : MediaSessionService() {
         compress(Bitmap.CompressFormat.JPEG, 100, stream)
         return stream.toByteArray()
     }
+}
+
+private fun readFully(stream: InputStream, buffer: ByteArray): Boolean {
+    var pos = 0
+    while (pos < buffer.size) {
+        val read = stream.read(buffer, pos, buffer.size - pos)
+        if (read < 0) return false
+        pos += read
+    }
+    return true
 }
 
 @get:UnstableApi
