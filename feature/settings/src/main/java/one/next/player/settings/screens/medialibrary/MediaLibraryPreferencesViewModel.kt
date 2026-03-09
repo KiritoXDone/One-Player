@@ -32,15 +32,19 @@ class MediaLibraryPreferencesViewModel @Inject constructor(
 
     fun onEvent(event: MediaLibraryPreferencesUiEvent) {
         when (event) {
-            MediaLibraryPreferencesUiEvent.ToggleIgnoreNoMediaFiles -> toggleIgnoreNoMediaFiles()
+            is MediaLibraryPreferencesUiEvent.SetIgnoreNoMediaFiles -> setIgnoreNoMediaFiles(event.enabled)
             MediaLibraryPreferencesUiEvent.ToggleMarkLastPlayedMedia -> toggleMarkLastPlayedMedia()
         }
     }
 
-    private fun toggleIgnoreNoMediaFiles() {
+    private fun setIgnoreNoMediaFiles(enabled: Boolean) {
         viewModelScope.launch {
             preferencesRepository.updateApplicationPreferences {
-                it.copy(ignoreNoMediaFiles = !it.ignoreNoMediaFiles)
+                if (it.ignoreNoMediaFiles == enabled) {
+                    it
+                } else {
+                    it.copy(ignoreNoMediaFiles = enabled)
+                }
             }
         }
     }
@@ -59,6 +63,6 @@ data class MediaLibraryPreferencesUiState(
 )
 
 sealed interface MediaLibraryPreferencesUiEvent {
-    data object ToggleIgnoreNoMediaFiles : MediaLibraryPreferencesUiEvent
+    data class SetIgnoreNoMediaFiles(val enabled: Boolean) : MediaLibraryPreferencesUiEvent
     data object ToggleMarkLastPlayedMedia : MediaLibraryPreferencesUiEvent
 }

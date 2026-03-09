@@ -23,6 +23,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import one.next.player.core.common.createManageExternalStorageAccessIntent
 import one.next.player.core.common.hasManageExternalStorageAccess
@@ -50,7 +52,13 @@ fun MediaLibraryPreferencesScreen(
     ) {
         if (!hasManageExternalStorageAccess()) return@rememberLauncherForActivityResult
 
-        viewModel.onEvent(MediaLibraryPreferencesUiEvent.ToggleIgnoreNoMediaFiles)
+        viewModel.onEvent(MediaLibraryPreferencesUiEvent.SetIgnoreNoMediaFiles(enabled = true))
+    }
+
+    LifecycleEventEffect(event = Lifecycle.Event.ON_RESUME) {
+        if (uiState.preferences.ignoreNoMediaFiles && !hasManageExternalStorageAccess()) {
+            viewModel.onEvent(MediaLibraryPreferencesUiEvent.SetIgnoreNoMediaFiles(enabled = false))
+        }
     }
 
     MediaLibraryPreferencesContent(
@@ -58,23 +66,20 @@ fun MediaLibraryPreferencesScreen(
         onNavigateUp = onNavigateUp,
         onFolderSettingClick = onFolderSettingClick,
         onThumbnailSettingClick = onThumbnailSettingClick,
-        onEvent = { event ->
-            when {
-                event != MediaLibraryPreferencesUiEvent.ToggleIgnoreNoMediaFiles -> {
-                    viewModel.onEvent(event)
-                }
-
-                uiState.preferences.ignoreNoMediaFiles || hasManageExternalStorageAccess() -> {
-                    viewModel.onEvent(event)
-                }
-
-                else -> {
+        onToggleIgnoreNoMediaFiles = {
+            if (it) {
+                if (hasManageExternalStorageAccess()) {
+                    viewModel.onEvent(MediaLibraryPreferencesUiEvent.SetIgnoreNoMediaFiles(enabled = true))
+                } else {
                     manageExternalStorageLauncher.launch(
                         createManageExternalStorageAccessIntent(context),
                     )
                 }
+            } else {
+                viewModel.onEvent(MediaLibraryPreferencesUiEvent.SetIgnoreNoMediaFiles(enabled = false))
             }
         },
+        onEvent = viewModel::onEvent,
     )
 }
 
@@ -85,6 +90,7 @@ private fun MediaLibraryPreferencesContent(
     onNavigateUp: () -> Unit,
     onFolderSettingClick: () -> Unit,
     onThumbnailSettingClick: () -> Unit,
+    onToggleIgnoreNoMediaFiles: (Boolean) -> Unit,
     onEvent: (MediaLibraryPreferencesUiEvent) -> Unit,
 ) {
     val preferences = uiState.preferences
@@ -138,7 +144,9 @@ private fun MediaLibraryPreferencesContent(
                     description = stringResource(id = R.string.ignore_nomedia_files_desc),
                     icon = NextIcons.HideSource,
                     isChecked = preferences.ignoreNoMediaFiles,
-                    onClick = { onEvent(MediaLibraryPreferencesUiEvent.ToggleIgnoreNoMediaFiles) },
+                    onClick = {
+                        onToggleIgnoreNoMediaFiles(!preferences.ignoreNoMediaFiles)
+                    },
                     isFirstItem = true,
                     isLastItem = false,
                 )
@@ -182,6 +190,7 @@ private fun MediaLibraryPreferencesScreenPreview() {
             onNavigateUp = {},
             onFolderSettingClick = {},
             onThumbnailSettingClick = {},
+            onToggleIgnoreNoMediaFiles = {},
             onEvent = {},
         )
     }
