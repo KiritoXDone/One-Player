@@ -99,10 +99,11 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: 执行 Ktlint 格式化
-        run: ./gradlew ktlintFormat
+        run: ./gradlew ktlintFormat ktlintCheck --warning-mode=fail
 
-      - name: 执行代码检查
-        run: ./gradlew lint ktlintCheck --warning-mode=fail
+      - name: 检查格式化结果
+        shell: bash
+        run: git diff --exit-code
 
       - name: 上传构建报告
         if: always()
@@ -111,8 +112,6 @@ jobs:
           name: build-reports
           path: |
             **/build/reports
-            **/build/lint-results-*.html
-            **/build/lint-results-*.xml
 
   auto-release:
     name: 自动触发发布
@@ -157,14 +156,11 @@ jobs:
           echo "版本 $version 待发布，更新日志已更新"
           echo "should_release=true" >> "$GITHUB_OUTPUT"
 
-      - name: 推送版本标签并触发发布
+      - name: 直接触发发布工作流
         if: steps.check.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           version="${{ needs.prepare.outputs.version_name }}"
-          tag="v${version}"
-          git tag "$tag"
-          git push origin "$tag"
           gh workflow run publish.yaml -f version="${version}" -f create_release=true

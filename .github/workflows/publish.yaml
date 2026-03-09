@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: android-release-${{ github.ref }}
@@ -264,6 +265,25 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.create_release == 'true' }}
     steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: 确保发布标签存在
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          tag="${{ needs.prepare.outputs.release_tag }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "标签 $tag 已存在"
+            exit 0
+          fi
+
+          git tag "$tag"
+          git push origin "$tag"
+
       - name: 下载所有构建产物
         uses: actions/download-artifact@v8
         with:
