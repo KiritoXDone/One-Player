@@ -1,10 +1,10 @@
-- 修复 ASS 字幕走特效渲染链时画面偏暗的问题
-- 改为统一走 cues 字幕输出并复用现有字幕样式，提升 ASS 字幕亮度与可读性
+- 优化文件夹导航速度，进入和返回文件夹不再触发强制刷新，支持快照缓存秒开
+- 改善长按播放速度手势的流畅度
 
 <details>
 <summary>English Version</summary>
 
-- Fixed ASS subtitles appearing too dark when rendered through the effects pipeline
-- Switched ASS subtitles to the cues output path so they reuse the existing subtitle styling and remain easier to read
+- Optimize folder navigation by eliminating forced refreshes on entry/return and adding snapshot caching for instant display
+- Improve smoothness of long press playback speed gesture
 
 </details>
