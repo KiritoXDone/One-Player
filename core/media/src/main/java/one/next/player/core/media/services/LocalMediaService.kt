@@ -1,6 +1,7 @@
 package one.next.player.core.media.services
 
 import android.app.Activity
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -23,7 +24,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import one.next.player.core.common.extensions.deleteMedia
+import one.next.player.core.common.extensions.VIDEO_COLLECTION_URI
 import one.next.player.core.common.extensions.getPath
 import one.next.player.core.common.extensions.updateMedia
 
@@ -113,9 +114,16 @@ class LocalMediaService @Inject constructor(
         )
     }
 
-    private suspend fun deleteMediaBelowR(uris: List<Uri>): Boolean = uris.map { uri ->
-        contentResolver.deleteMedia(uri)
-    }.all { it }
+    private suspend fun deleteMediaBelowR(uris: List<Uri>): Boolean {
+        if (uris.isEmpty()) return false
+        return try {
+            val ids = uris.map { ContentUris.parseId(it) }
+            val selection = "${MediaStore.Video.Media._ID} IN (${ids.joinToString()})"
+            contentResolver.delete(VIDEO_COLLECTION_URI, selection, null) > 0
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     @RequiresApi(Build.VERSION_CODES.R)
     private suspend fun renameMediaR(uri: Uri, to: String): Boolean = suspendCancellableCoroutine { continuation ->

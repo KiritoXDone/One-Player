@@ -120,7 +120,7 @@ class LocalMediaSynchronizer @Inject constructor(
         }
         directoryDao.upsertAll(directories)
 
-        val currentDirectoryPaths = directories.map { it.path }
+        val currentDirectoryPaths = directories.map { it.path }.toSet()
         val unwantedDirectories = directoryDao.getAll().first()
             .filterNot { it.path in currentDirectoryPaths }
         val unwantedDirectoriesPaths = unwantedDirectories.map { it.path }
@@ -157,10 +157,14 @@ class LocalMediaSynchronizer @Inject constructor(
     }
 
     private suspend fun updateMedia(media: List<MediaVideo>) = withContext(Dispatchers.Default) {
+        // 单次查询替代 N 次 mediumDao.get()，同时复用于检测待清理记录
+        val allWithInfo = mediumDao.getAllWithInfo().first()
+        val existingMediaMap = allWithInfo.associate { it.mediumEntity.uriString to it.mediumEntity }
+
         val mediumEntities = media.mapNotNull { mediaVideo ->
             val file = File(mediaVideo.data)
             val parentPath = file.parent ?: return@mapNotNull null
-            val mediumEntity = mediumDao.get(mediaVideo.uri.toString())
+            val mediumEntity = existingMediaMap[mediaVideo.uri.toString()]
 
             mediumEntity?.copy(
                 path = file.path,
@@ -188,9 +192,11 @@ class LocalMediaSynchronizer @Inject constructor(
 
         mediumDao.upsertAll(mediumEntities)
 
-        val currentMediaUris = mediumEntities.map { it.uriString }
-        val unwantedMedia = mediumDao.getAllWithInfo().first()
-            .filterNot { it.mediumEntity.uriString in currentMediaUris }
+        val currentMediaUris = mediumEntities.map { it.uriString }.toSet()
+        val unwantedMedia = allWithInfo.filterNot { it.mediumEntity.uriString in currentMediaUris }
+
+        if (unwantedMedia.isEmpty()) return@withContext
+
         val unwantedMediaUris = unwantedMedia.map { it.mediumEntity.uriString }
 
         mediumDao.delete(unwantedMediaUris)
