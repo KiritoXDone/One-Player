@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.os.Build.VERSION.SDK_INT
+import android.util.Size
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.graphics.get
 import coil3.ImageLoader
@@ -20,6 +21,7 @@ import coil3.toAndroidUri
 import io.github.anilbeesetti.nextlib.mediainfo.MediaInfoBuilder
 import kotlin.math.abs
 import okio.FileSystem
+import one.next.player.core.common.Logger
 
 class VideoThumbnailDecoder(
     private val source: ImageSource,
@@ -29,8 +31,29 @@ class VideoThumbnailDecoder(
 ) : Decoder {
 
     companion object {
+        private const val TAG = "VideoThumbnailDecoder"
+
         // 缩略图最大尺寸，避免 4K 全分辨率 Bitmap 占用过多内存
         private const val MAX_THUMBNAIL_SIZE = 512
+    }
+
+    // 使用系统缩略图服务，对 content:// URI 高效且自带缓存
+    private fun tryLoadSystemThumbnail(): Bitmap? {
+        val metadata = source.metadata as? ContentMetadata ?: return null
+        val uri = metadata.uri.toAndroidUri()
+        val start = System.currentTimeMillis()
+        return try {
+            options.context.contentResolver.loadThumbnail(
+                uri,
+                Size(MAX_THUMBNAIL_SIZE, MAX_THUMBNAIL_SIZE),
+                null,
+            ).also {
+                Logger.logDebug(TAG, "systemThumbnail ok ${System.currentTimeMillis() - start}ms uri=$uri")
+            }
+        } catch (e: Exception) {
+            Logger.logDebug(TAG, "systemThumbnail fail ${System.currentTimeMillis() - start}ms uri=$uri err=${e.message}")
+            null
+        }
     }
 
     private val diskCacheKey: String
@@ -65,8 +88,19 @@ class VideoThumbnailDecoder(
             }
         }
 
+        // 系统缩略图快速路径（content:// URI，由系统优化且自带缓存）
+        tryLoadSystemThumbnail()?.let { systemBitmap ->
+            val bitmap = writeToDiskCache(systemBitmap)
+            return DecodeResult(
+                image = bitmap.toDrawable(options.context.resources).asImage(),
+                isSampled = true,
+            )
+        }
+
+        val retrieverStart = System.currentTimeMillis()
         return MediaMetadataRetriever().use { retriever ->
             retriever.setDataSource(source)
+            Logger.logDebug(TAG, "retriever setDataSource ${System.currentTimeMillis() - retrieverStart}ms key=$diskCacheKey")
 
             val embeddedPicture = retriever.embeddedPicture?.let { pictureBytes ->
                 decodeSampledBitmap(pictureBytes)
@@ -117,6 +151,7 @@ class VideoThumbnailDecoder(
             } ?: getThumbnailFromMediaInfo()?.scaleToFit()
                 ?: throw IllegalStateException("Failed to get video thumbnail.")
 
+            Logger.logDebug(TAG, "retriever done ${System.currentTimeMillis() - retrieverStart}ms key=$diskCacheKey")
             val bitmap = writeToDiskCache(rawBitmap)
 
             DecodeResult(
