@@ -16,7 +16,6 @@ import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
-import android.util.Log
 import android.util.TypedValue
 import androidx.core.graphics.drawable.toBitmapOrNull
 import androidx.core.text.isDigitsOnly
@@ -31,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import one.next.player.core.common.Logger
 import org.mozilla.universalchardet.UniversalDetector
 
 val VIDEO_COLLECTION_URI: Uri
@@ -193,14 +193,29 @@ fun Context.getMediaContentUri(uri: Uri): Uri? {
 }
 
 suspend fun Context.scanPaths(paths: List<String>): Boolean = suspendCoroutine { continuation ->
+    if (paths.isEmpty()) {
+        continuation.resumeWith(Result.success(true))
+        return@suspendCoroutine
+    }
+
     try {
+        var remaining = paths.size
+        var hasSuccess = false
         MediaScannerConnection.scanFile(
             this@scanPaths,
             paths.toTypedArray(),
-            arrayOf("video/*"),
+            null,
         ) { path, uri ->
-            Log.d("ScanPath", "scanPaths: path=$path, uri=$uri")
-            continuation.resumeWith(Result.success(true))
+            Logger.logDebug("ScanPath", "scanPaths: path=$path, uri=$uri")
+            synchronized(paths) {
+                if (uri != null) {
+                    hasSuccess = true
+                }
+                remaining--
+                if (remaining == 0) {
+                    continuation.resumeWith(Result.success(hasSuccess))
+                }
+            }
         }
     } catch (e: Exception) {
         continuation.resumeWith(Result.failure(e))
@@ -218,7 +233,7 @@ suspend fun Context.scanFileForContentUri(
                 MediaScannerConnection.scanFile(
                     this@scanFileForContentUri,
                     arrayOf(path),
-                    arrayOf("video/*"),
+                    null,
                 ) { _, uri ->
                     continuation.resumeWith(Result.success(uri))
                 }

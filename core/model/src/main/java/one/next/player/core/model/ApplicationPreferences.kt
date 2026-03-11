@@ -29,6 +29,8 @@ data class ApplicationPreferences(
     val thumbnailGenerationStrategy: ThumbnailGenerationStrategy = ThumbnailGenerationStrategy.FRAME_AT_PERCENTAGE,
     val thumbnailFramePosition: Float = DEFAULT_THUMBNAIL_FRAME_POSITION,
     val checkForUpdatesOnStartup: Boolean = false,
+    val manualVideoPaths: List<String> = emptyList(),
+    val pendingExternalVideoPaths: List<String> = emptyList(),
 ) {
 
     fun isPathExcluded(path: String): Boolean {

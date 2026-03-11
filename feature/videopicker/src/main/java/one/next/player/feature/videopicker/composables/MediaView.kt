@@ -158,7 +158,11 @@ fun MediaView(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         selectionManager.toggleVideoSelection(video)
                     },
-                    modifier = Modifier.onVideoFirstVisible { onVideoLoaded(video.uriString.toUri()) },
+                    modifier = Modifier.onVideoFirstVisible {
+                        if (video.duration <= 0 || video.width <= 0 || video.height <= 0) {
+                            onVideoLoaded(video.uriString.toUri())
+                        }
+                    },
                 )
             }
         }

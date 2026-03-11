@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.database.ContentObserver
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import androidx.core.net.toUri
@@ -36,7 +37,6 @@ import one.next.player.core.common.extensions.VIDEO_COLLECTION_URI
 import one.next.player.core.common.extensions.getStorageVolumes
 import one.next.player.core.common.extensions.prettyName
 import one.next.player.core.common.extensions.scanPaths
-import one.next.player.core.common.extensions.scanStorage
 import one.next.player.core.common.hasManageExternalStorageAccess
 import one.next.player.core.database.converter.UriListConverter
 import one.next.player.core.database.dao.DirectoryDao
@@ -60,8 +60,59 @@ class LocalMediaSynchronizer @Inject constructor(
 
     private var mediaSyncingJob: Job? = null
 
-    override suspend fun refresh(path: String?): Boolean = path?.let { context.scanPaths(listOf(path)) }
-        ?: context.getStorageVolumes().all { context.scanStorage(it.path) }
+    override suspend fun refresh(path: String?): Boolean = withContext(dispatcher) {
+        path?.let {
+            registerManualVideoPath(it)
+            mergePendingManualVideoPaths()
+            return@withContext context.scanPaths(listOf(it))
+        }
+
+        mergePendingManualVideoPaths()
+        val additionalScanTargets = buildRefreshScanTargets()
+        if (additionalScanTargets.isNotEmpty()) {
+            registerUnindexedPaths(additionalScanTargets)
+            context.scanPaths(additionalScanTargets)
+        }
+        true
+    }
+
+    override suspend fun registerManualVideoPath(path: String) {
+        if (path.isBlank()) return
+
+        val canonicalPath = runCatching { File(path).canonicalPath }.getOrDefault(path)
+        Logger.logInfo(TAG, "registerManualVideoPath path=$canonicalPath")
+        appPreferencesDataSource.update { preferences ->
+            val pendingPaths = preferences.pendingExternalVideoPaths + canonicalPath
+            preferences.copy(
+                pendingExternalVideoPaths = pendingPaths.distinct(),
+            )
+        }
+    }
+
+    // 将文件系统发现但 MediaStore 未收录的路径持久化，确保同步时能兜底
+    private suspend fun registerUnindexedPaths(paths: List<String>) {
+        if (paths.isEmpty()) return
+        Logger.logInfo(TAG, "registerUnindexedPaths count=${paths.size}")
+        appPreferencesDataSource.update {
+            it.copy(manualVideoPaths = (it.manualVideoPaths + paths).distinct())
+        }
+    }
+
+    private suspend fun mergePendingManualVideoPaths() {
+        val preferences = appPreferencesDataSource.preferences.first()
+        if (preferences.pendingExternalVideoPaths.isEmpty()) return
+
+        Logger.logInfo(
+            TAG,
+            "mergePendingManualVideoPaths pending=${preferences.pendingExternalVideoPaths.size} manual=${preferences.manualVideoPaths.size}",
+        )
+        appPreferencesDataSource.update {
+            it.copy(
+                manualVideoPaths = (it.manualVideoPaths + it.pendingExternalVideoPaths).distinct(),
+                pendingExternalVideoPaths = emptyList(),
+            )
+        }
+    }
 
     override fun startSync() {
         if (mediaSyncingJob != null) return
@@ -73,10 +124,11 @@ class LocalMediaSynchronizer @Inject constructor(
         ) { mediaStoreVideos, preferences ->
             mergeVisibleMedia(
                 mediaStoreVideos = mediaStoreVideos,
+                manuallyDiscoveredPaths = preferences.manualVideoPaths.toSet(),
                 includeNoMediaDirectories = preferences.ignoreNoMediaFiles,
             )
         }.onEach { media ->
-            Logger.logDebug(TAG, "Syncing ${media.size} media entries")
+            Logger.logInfo(TAG, "onEach syncing ${media.size} media entries")
             applicationScope.launch { updateDirectories(media) }
             applicationScope.launch { updateMedia(media) }
         }.launchIn(applicationScope)
@@ -90,44 +142,63 @@ class LocalMediaSynchronizer @Inject constructor(
 
     private suspend fun mergeVisibleMedia(
         mediaStoreVideos: List<MediaVideo>,
+        manuallyDiscoveredPaths: Set<String>,
         includeNoMediaDirectories: Boolean,
     ): List<MediaVideo> = withContext(dispatcher) {
-        val indexedPaths = mediaStoreVideos.map { it.data }.toSet()
-        val additionalVideos = mutableListOf<MediaVideo>()
+        if (manuallyDiscoveredPaths.isNotEmpty()) {
+            Logger.logInfo(TAG, "mergeVisibleMedia manualPaths=${manuallyDiscoveredPaths.size}")
+        }
+        val manuallyDiscoveredVideos = manuallyDiscoveredPaths
+            .asSequence()
+            .map(::File)
+            .filter(File::exists)
+            .filter { it.isVisibleVideoFile() }
+            .map { it.toBasicMediaVideo() }
+            .toList()
 
-        // .nomedia 目录扫描需要 MANAGE_EXTERNAL_STORAGE
-        if (includeNoMediaDirectories && hasManageExternalStorageAccess()) {
-            val noMediaVideos = context.getStorageVolumes().flatMap { volume ->
-                volume.collectNoMediaVideos()
-            }
-            if (noMediaVideos.isNotEmpty()) {
-                Logger.logInfo(TAG, "Found ${noMediaVideos.size} videos inside .nomedia directories")
-                additionalVideos.addAll(noMediaVideos)
-            }
+        val combinedVisibleMedia = mediaStoreVideos + manuallyDiscoveredVideos
+        Logger.logInfo(
+            TAG,
+            "mergeVisibleMedia result mediaStore=${mediaStoreVideos.size} manual=${manuallyDiscoveredVideos.size} combined=${combinedVisibleMedia.size} noMedia=$includeNoMediaDirectories manageAccess=${hasManageExternalStorageAccess()}",
+        )
+        if (!includeNoMediaDirectories || !hasManageExternalStorageAccess()) {
+            return@withContext combinedVisibleMedia
+                .distinctBy(MediaVideo::data)
+                .sortedBy(MediaVideo::data)
         }
 
-        // 公有目录中未被 MediaStore 收录的视频
-        val unindexedVideos = context.getStorageVolumes().flatMap { volume ->
-            volume.collectUnindexedVideos(indexedPaths)
+        val noMediaVideos = context.getStorageVolumes().flatMap { volume ->
+            volume.collectNoMediaVideos()
         }
-        if (unindexedVideos.isNotEmpty()) {
-            Logger.logInfo(TAG, "Found ${unindexedVideos.size} unindexed videos on file system")
-            additionalVideos.addAll(unindexedVideos)
-        }
-
-        if (additionalVideos.isEmpty()) {
-            return@withContext mediaStoreVideos
+        if (noMediaVideos.isEmpty()) {
+            return@withContext combinedVisibleMedia
+                .distinctBy(MediaVideo::data)
+                .sortedBy(MediaVideo::data)
         }
 
-        return@withContext (mediaStoreVideos + additionalVideos)
+        Logger.logInfo(TAG, "Found ${noMediaVideos.size} videos inside .nomedia directories")
+        return@withContext (combinedVisibleMedia + noMediaVideos)
             .distinctBy(MediaVideo::data)
             .sortedBy(MediaVideo::data)
     }
 
-    private suspend fun updateDirectories(media: List<MediaVideo>) = withContext(Dispatchers.Default) {
-        val directories = context.getStorageVolumes().flatMap {
-            getDirectoryEntities(currentFolder = it, media = media)
+    private fun buildRefreshScanTargets(): List<String> {
+        val indexedPaths = getMediaVideo(selection = null, selectionArgs = null, sortOrder = null)
+            .map { it.data }
+            .toHashSet()
+
+        val targets = context.getStorageVolumes().flatMap { volume ->
+            volume.collectVisibleUnindexedVideoPaths(indexedPaths)
+        }.distinct()
+
+        if (targets.isNotEmpty()) {
+            Logger.logInfo(TAG, "Refreshing ${targets.size} unindexed video files")
         }
+        return targets
+    }
+
+    private suspend fun updateDirectories(media: List<MediaVideo>) = withContext(Dispatchers.Default) {
+        val directories = buildDirectoryEntities(media)
         directoryDao.upsertAll(directories)
 
         val currentDirectoryPaths = directories.map { it.path }.toSet()
@@ -138,32 +209,31 @@ class LocalMediaSynchronizer @Inject constructor(
         directoryDao.delete(unwantedDirectoriesPaths)
     }
 
-    private fun getDirectoryEntities(
-        parentFolder: File? = null,
-        currentFolder: File,
-        media: List<MediaVideo>,
-    ): List<DirectoryEntity> {
-        val hasMediaInCurrentFolder = media.any { it.data.startsWith("${currentFolder.path}/") }
-        if (!hasMediaInCurrentFolder) return emptyList()
+    private fun buildDirectoryEntities(media: List<MediaVideo>): List<DirectoryEntity> {
+        if (media.isEmpty()) return emptyList()
 
-        val currentDirectoryEntity = DirectoryEntity(
-            path = currentFolder.path,
-            name = currentFolder.prettyName,
-            modified = currentFolder.lastModified(),
-            parentPath = parentFolder?.path ?: "/",
-        )
+        val storageVolumes = context.getStorageVolumes()
+        val volumePaths = storageVolumes.map { it.path }.toSet()
+        val directoryPaths = linkedSetOf<String>()
 
-        val subDirectories = currentFolder.listFiles { file ->
-            file.isDirectory && media.any { it.data.startsWith(file.path) }
-        }?.flatMap { file ->
-            getDirectoryEntities(
-                parentFolder = currentFolder,
-                currentFolder = file,
-                media = media,
+        media.forEach { mediaVideo ->
+            var currentPath = File(mediaVideo.data).parent ?: return@forEach
+            while (directoryPaths.add(currentPath)) {
+                if (currentPath in volumePaths) break
+                currentPath = File(currentPath).parent ?: break
+            }
+        }
+
+        return directoryPaths.map { path ->
+            val directory = File(path)
+            val parentPath = directory.parent?.takeIf { it in directoryPaths } ?: "/"
+            DirectoryEntity(
+                path = path,
+                name = directory.prettyName,
+                modified = directory.lastModified(),
+                parentPath = parentPath,
             )
-        } ?: emptyList()
-
-        return listOf(currentDirectoryEntity) + subDirectories
+        }
     }
 
     private suspend fun updateMedia(media: List<MediaVideo>) = withContext(Dispatchers.Default) {
@@ -318,44 +388,25 @@ class LocalMediaSynchronizer @Inject constructor(
         return currentDirectoryVideos + nestedVideos
     }
 
-    // 在公有目录中查找不在 MediaStore 中的视频文件
-    private fun File.collectUnindexedVideos(indexedPaths: Set<String>): List<MediaVideo> {
+    private fun File.collectVisibleUnindexedVideoPaths(indexedPaths: Set<String>): List<String> {
         if (!exists() || !isDirectory) return emptyList()
         if (name.equals("Android", ignoreCase = true)) return emptyList()
 
         val children = runCatching { listFiles()?.toList().orEmpty() }
             .getOrElse { return emptyList() }
-
-        // .nomedia 目录由 collectNoMediaVideos 单独处理
         val hasNoMedia = children.any {
             it.isFile && it.name.equals(NO_MEDIA_FILE_NAME, ignoreCase = true)
         }
         if (hasNoMedia) return emptyList()
 
-        val unindexedVideos = children
+        val currentPaths = children
             .filter { it.isVisibleVideoFile() && it.path !in indexedPaths }
-            .mapNotNull { it.toBasicMediaVideo() }
+            .map { it.path }
+        val nestedPaths = children
+            .filter(File::isDirectory)
+            .flatMap { directory -> directory.collectVisibleUnindexedVideoPaths(indexedPaths) }
 
-        val nestedVideos = children
-            .filter { it.isDirectory }
-            .flatMap { it.collectUnindexedVideos(indexedPaths) }
-
-        return unindexedVideos + nestedVideos
-    }
-
-    // 不使用 MediaMetadataRetriever，仅从文件属性构建轻量 MediaVideo
-    private fun File.toBasicMediaVideo(): MediaVideo? {
-        if (!exists() || !isFile) return null
-        return MediaVideo(
-            id = -path.hashCode().toLong().absoluteValue,
-            uri = toUri(),
-            size = length(),
-            width = 0,
-            height = 0,
-            data = path,
-            duration = 0L,
-            dateModified = lastModified(),
-        )
+        return currentPaths + nestedPaths
     }
 
     private fun File.isVisibleVideoFile(): Boolean {
@@ -363,18 +414,39 @@ class LocalMediaSynchronizer @Inject constructor(
 
         val extensionName = extension.lowercase()
         if (extensionName.isBlank()) return false
+        if (extensionName in KNOWN_VIDEO_EXTENSIONS) return true
 
         val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extensionName)
         return mimeType?.startsWith("video/") == true
     }
 
-    private fun File.toHiddenMediaVideo(): MediaVideo? {
+    // 不使用 MediaMetadataRetriever，避免大文件解析阻塞
+    private fun File.toBasicMediaVideo(): MediaVideo = MediaVideo(
+        id = -path.hashCode().toLong().absoluteValue,
+        uri = toUri(),
+        size = length(),
+        width = 0,
+        height = 0,
+        data = path,
+        duration = 0L,
+        dateModified = lastModified(),
+    )
+
+    private fun File.toHiddenMediaVideo(): MediaVideo? = toMediaVideo(
+        uri = toUri(),
+        errorMessage = "Failed to read hidden media metadata for $path",
+    )
+
+    private fun File.toMediaVideo(
+        uri: Uri,
+        errorMessage: String,
+    ): MediaVideo? {
         val retriever = MediaMetadataRetriever()
         return runCatching {
             retriever.setDataSource(path)
             MediaVideo(
                 id = -path.hashCode().toLong().absoluteValue,
-                uri = toUri(),
+                uri = uri,
                 size = length(),
                 width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0,
                 height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0,
@@ -383,7 +455,7 @@ class LocalMediaSynchronizer @Inject constructor(
                 dateModified = lastModified(),
             )
         }.onFailure { throwable ->
-            Logger.logError(TAG, "Failed to read hidden media metadata for $path", throwable)
+            Logger.logError(TAG, errorMessage, throwable)
         }.getOrNull().also {
             retriever.release()
         }
@@ -392,6 +464,24 @@ class LocalMediaSynchronizer @Inject constructor(
     companion object {
         private const val TAG = "LocalMediaSynchronizer"
         private const val NO_MEDIA_FILE_NAME = ".nomedia"
+        private val KNOWN_VIDEO_EXTENSIONS = setOf(
+            "3gp",
+            "asf",
+            "avi",
+            "flv",
+            "m2ts",
+            "m4v",
+            "mkv",
+            "mov",
+            "mp4",
+            "mpeg",
+            "mpg",
+            "mts",
+            "rmvb",
+            "ts",
+            "webm",
+            "wmv",
+        )
 
         val VIDEO_PROJECTION = arrayOf(
             MediaStore.Video.Media._ID,
