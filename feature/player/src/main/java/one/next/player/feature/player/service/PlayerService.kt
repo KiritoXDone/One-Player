@@ -14,6 +14,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.ParserException
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -28,6 +29,8 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -36,6 +39,7 @@ import androidx.media3.extractor.ExtractorInput
 import androidx.media3.extractor.ExtractorOutput
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.PositionHolder
+import androidx.media3.extractor.mkv.MatroskaExtractor
 import androidx.media3.extractor.mp4.Mp4Extractor
 import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.session.CommandButton
@@ -55,7 +59,7 @@ import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import io.github.anilbeesetti.nextlib.media3ext.renderer.subtitleDelayMilliseconds
 import io.github.anilbeesetti.nextlib.media3ext.renderer.subtitleSpeed
 import io.github.peerless2012.ass.media.AssHandler
-import io.github.peerless2012.ass.media.kt.withAssMkvSupport
+import io.github.peerless2012.ass.media.extractor.AssMatroskaExtractor
 import io.github.peerless2012.ass.media.kt.withAssSupport
 import io.github.peerless2012.ass.media.parser.AssSubtitleParserFactory
 import io.github.peerless2012.ass.media.type.AssRenderType
@@ -135,6 +139,80 @@ class PlayerService : MediaSessionService() {
     private var currentVolumeGain: Int = 0
     private val mediaParserRetried = mutableSetOf<String>()
     private var assHandler: AssHandler? = null
+
+    private var startupTimestamp = 0L
+    private val startupAnalyticsListener = object : AnalyticsListener {
+        override fun onPlaybackStateChanged(
+            eventTime: AnalyticsListener.EventTime,
+            state: Int,
+        ) {
+            if (state == Player.STATE_BUFFERING) {
+                startupTimestamp = System.currentTimeMillis()
+            }
+            val label = when (state) {
+                Player.STATE_IDLE -> "IDLE"
+                Player.STATE_BUFFERING -> "BUFFERING"
+                Player.STATE_READY -> "READY"
+                Player.STATE_ENDED -> "ENDED"
+                else -> "UNKNOWN($state)"
+            }
+            Logger.logInfo(TAG, "startup state=$label t=${elapsed()}ms")
+        }
+
+        override fun onLoadStarted(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
+            mediaLoadData: androidx.media3.exoplayer.source.MediaLoadData,
+        ) {
+            Logger.logInfo(TAG, "startup loadStart t=${elapsed()}ms type=${mediaLoadData.dataType}")
+        }
+
+        override fun onLoadCompleted(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
+            mediaLoadData: androidx.media3.exoplayer.source.MediaLoadData,
+        ) {
+            Logger.logInfo(
+                TAG,
+                "startup loadDone t=${elapsed()}ms type=${mediaLoadData.dataType} bytes=${loadEventInfo.bytesLoaded}",
+            )
+        }
+
+        override fun onRenderedFirstFrame(
+            eventTime: AnalyticsListener.EventTime,
+            output: Any,
+            renderTimeMs: Long,
+        ) {
+            Logger.logInfo(TAG, "startup firstFrame t=${elapsed()}ms")
+        }
+
+        override fun onVideoDecoderInitialized(
+            eventTime: AnalyticsListener.EventTime,
+            decoderName: String,
+            initializedTimestampMs: Long,
+            initializationDurationMs: Long,
+        ) {
+            Logger.logInfo(TAG, "startup decoderInit=$decoderName dur=${initializationDurationMs}ms t=${elapsed()}ms")
+        }
+
+        override fun onAudioDecoderInitialized(
+            eventTime: AnalyticsListener.EventTime,
+            decoderName: String,
+            initializedTimestampMs: Long,
+            initializationDurationMs: Long,
+        ) {
+            Logger.logInfo(TAG, "startup audioDecoder=$decoderName dur=${initializationDurationMs}ms t=${elapsed()}ms")
+        }
+
+        override fun onTracksChanged(
+            eventTime: AnalyticsListener.EventTime,
+            tracks: androidx.media3.common.Tracks,
+        ) {
+            Logger.logInfo(TAG, "startup tracksChanged t=${elapsed()}ms groups=${tracks.groups.size}")
+        }
+    }
+
+    private fun elapsed(): Long = System.currentTimeMillis() - startupTimestamp
 
     private val playbackStateListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -426,6 +504,53 @@ class PlayerService : MediaSessionService() {
     }
 
     private data class SkipRegion(val start: Long, val length: Long)
+
+    private fun createPlaybackExtractorsFactory(
+        assSubtitleParserFactory: AssSubtitleParserFactory,
+        assHandler: AssHandler,
+    ): ExtractorsFactory {
+        val baseFactory = DefaultExtractorsFactory()
+        return ExtractorsFactory {
+            val extractors = baseFactory.createExtractors()
+            for (i in extractors.indices) {
+                if (extractors[i] is MatroskaExtractor) {
+                    extractors[i] = AssMatroskaExtractor(
+                        assSubtitleParserFactory,
+                        assHandler,
+                    ).also { disableSeekForCues(it) }
+                }
+            }
+            extractors
+        }
+    }
+
+    // 反射禁用 Cue 索引寻址，避免解析完整 MKV 文件导致首帧延迟
+    private fun disableSeekForCues(extractor: MatroskaExtractor) {
+        try {
+            val field = MatroskaExtractor::class.java.getDeclaredField("seekForCuesEnabled")
+            field.isAccessible = true
+            field.set(extractor, false)
+        } catch (e: Exception) {
+            Logger.logError(TAG, "disableSeekForCues failed", e)
+        }
+    }
+
+    // 预热 MediaCodecUtil 解码器缓存，避免首次播放阻塞在 codec 枚举
+    private fun warmUpCodecCache() {
+        // 仅预热最常用的 MIME，减少 synchronized 占锁时间
+        val mimeTypes = listOf(
+            MimeTypes.VIDEO_H265,
+            MimeTypes.VIDEO_H264,
+            MimeTypes.AUDIO_AAC,
+        )
+        for (mimeType in mimeTypes) {
+            try {
+                MediaCodecUtil.getDecoderInfos(mimeType, false, false)
+            } catch (_: MediaCodecUtil.DecoderQueryException) {
+                // 仅为预热缓存
+            }
+        }
+    }
 
     // 扫描 MP4 顶层 atom，检测连续出现的 moov box
     private fun detectDuplicateMoov(uri: Uri): SkipRegion? {
@@ -801,6 +926,7 @@ class PlayerService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        serviceScope.launch(Dispatchers.IO) { warmUpCodecCache() }
         val renderersFactory = NextRenderersFactory(applicationContext)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(
@@ -825,7 +951,7 @@ class PlayerService : MediaSessionService() {
         val assSubtitleParserFactory = AssSubtitleParserFactory(assHandler)
         val mediaSourceFactory = DefaultMediaSourceFactory(
             DefaultDataSource.Factory(applicationContext),
-            DefaultExtractorsFactory().withAssMkvSupport(
+            createPlaybackExtractorsFactory(
                 assSubtitleParserFactory = assSubtitleParserFactory,
                 assHandler = assHandler,
             ),
@@ -847,6 +973,7 @@ class PlayerService : MediaSessionService() {
             .also {
                 assHandler.init(it)
                 it.addListener(playbackStateListener)
+                it.addAnalyticsListener(startupAnalyticsListener)
                 it.pauseAtEndOfMediaItems = !playerPreferences.autoplay
                 it.repeatMode = when (playerPreferences.loopMode) {
                     LoopMode.OFF -> Player.REPEAT_MODE_OFF

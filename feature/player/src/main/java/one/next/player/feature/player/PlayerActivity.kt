@@ -36,12 +36,15 @@ import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.AndroidEntryPoint
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
+import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import one.next.player.core.common.Logger
 import one.next.player.core.common.extensions.getMediaContentUri
 import one.next.player.core.common.extensions.scanFileForContentUri
+import one.next.player.core.media.sync.MediaSynchronizer
 import one.next.player.core.model.ScreenOrientation
 import one.next.player.core.ui.theme.NextPlayerTheme
 import one.next.player.feature.player.extensions.registerForSuspendActivityResult
@@ -57,6 +60,13 @@ val LocalUseMaterialYouControls = compositionLocalOf { false }
 @SuppressLint("UnsafeOptInUsageError")
 @AndroidEntryPoint
 class PlayerActivity : AppCompatActivity() {
+
+    companion object {
+        private const val TAG = "PlayerActivity"
+    }
+
+    @Inject
+    lateinit var mediaSynchronizer: MediaSynchronizer
 
     private val viewModel: PlayerViewModel by viewModels()
     val playerPreferences get() = viewModel.uiState.value.playerPreferences
@@ -193,6 +203,10 @@ class PlayerActivity : AppCompatActivity() {
         val isNewUriTheCurrentMediaItem = mediaController?.currentMediaItem?.localConfiguration?.uri.toString() == uri.toString()
 
         if (returningFromBackground || isNewUriTheCurrentMediaItem) {
+            Logger.logInfo(
+                TAG,
+                "startPlayback reused current item returning=$returningFromBackground same=$isNewUriTheCurrentMediaItem uri=$uri",
+            )
             mediaController?.prepare()
             mediaController?.playWhenReady = viewModel.playWhenReady
             return
@@ -206,16 +220,35 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private suspend fun playVideo(uri: Uri) = withContext(Dispatchers.Default) {
+        val t0 = System.currentTimeMillis()
+        Logger.logInfo(TAG, "playVideo start uri=$uri")
+
         val playbackUri = resolvePlaybackUri(uri)
+        if (uri.scheme == "file") {
+            uri.path?.let { path ->
+                mediaSynchronizer.registerManualVideoPath(path)
+                Logger.logInfo(TAG, "playVideo registeredManualPath=$path")
+            }
+        }
+        val t1 = System.currentTimeMillis()
+        Logger.logInfo(TAG, "playVideo resolveUri=${t1 - t0}ms resolved=$playbackUri")
+
+        val shouldBuildPlaylist = uri.scheme != "file" && playbackUri.scheme != "file"
         val playlist = playerApi.getPlaylist().takeIf { it.isNotEmpty() }
-            ?: viewModel.getPlaylistFromUri(playbackUri)
-                .map { it.uriString }
-                .toMutableList()
-                .apply {
-                    if (!contains(playbackUri.toString())) {
-                        add(index = 0, element = playbackUri.toString())
+            ?: if (shouldBuildPlaylist) {
+                viewModel.getPlaylistFromUri(playbackUri)
+                    .map { it.uriString }
+                    .toMutableList()
+                    .apply {
+                        if (!contains(playbackUri.toString())) {
+                            add(index = 0, element = playbackUri.toString())
+                        }
                     }
-                }
+            } else {
+                mutableListOf(playbackUri.toString())
+            }
+        val t2 = System.currentTimeMillis()
+        Logger.logInfo(TAG, "playVideo playlist=${t2 - t1}ms size=${playlist.size}")
 
         val mediaItemIndexToPlay = playlist.indexOfFirst {
             it == playbackUri.toString()
@@ -249,22 +282,37 @@ class PlayerActivity : AppCompatActivity() {
                 setMediaItems(mediaItems, mediaItemIndexToPlay, playerApi.position?.toLong() ?: C.TIME_UNSET)
                 playWhenReady = viewModel.playWhenReady
                 prepare()
+                Logger.logInfo(TAG, "playVideo prepare total=${System.currentTimeMillis() - t0}ms")
             }
         }
     }
 
     // file:// URI 在 scoped storage 下无法直接读取，需要逐级回退解析
     private suspend fun resolvePlaybackUri(uri: Uri): Uri {
-        getMediaContentUri(uri)?.let { return it }
-        if (uri.scheme != "file") return uri
-        val rawPath = uri.path ?: return uri
-        val canonicalPath = runCatching { File(rawPath).canonicalPath }.getOrDefault(rawPath)
+        val t0 = System.currentTimeMillis()
 
-        scanFileForContentUri(canonicalPath)?.let { return it }
+        // file:// 已有路径，跳过 MediaStore 查询避免 ContentResolver 阻塞
+        if (uri.scheme == "file") {
+            val rawPath = uri.path ?: return uri
+            val canonicalPath = runCatching { File(rawPath).canonicalPath }.getOrDefault(rawPath)
+            Logger.logInfo(TAG, "resolveUri canonical=${System.currentTimeMillis() - t0}ms path=$canonicalPath")
 
-        // 规范路径兜底，公有目录 READ_MEDIA_VIDEO 即可读取
-        if (File(canonicalPath).exists()) {
-            return Uri.fromFile(File(canonicalPath))
+            scanFileForContentUri(path = canonicalPath, timeoutMs = 800L)?.let {
+                Logger.logInfo(TAG, "resolveUri scanFile=${System.currentTimeMillis() - t0}ms result=$it")
+                return it
+            }
+            Logger.logInfo(TAG, "resolveUri scanFileMiss=${System.currentTimeMillis() - t0}ms")
+
+            if (File(canonicalPath).exists()) {
+                Logger.logInfo(TAG, "resolveUri fileFallback=${System.currentTimeMillis() - t0}ms")
+                return Uri.fromFile(File(canonicalPath))
+            }
+            return uri
+        }
+
+        getMediaContentUri(uri)?.let {
+            Logger.logInfo(TAG, "resolveUri contentUri=${System.currentTimeMillis() - t0}ms")
+            return it
         }
 
         return uri
