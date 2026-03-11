@@ -92,24 +92,34 @@ class LocalMediaSynchronizer @Inject constructor(
         mediaStoreVideos: List<MediaVideo>,
         includeNoMediaDirectories: Boolean,
     ): List<MediaVideo> = withContext(dispatcher) {
-        if (!includeNoMediaDirectories) {
+        val indexedPaths = mediaStoreVideos.map { it.data }.toSet()
+        val additionalVideos = mutableListOf<MediaVideo>()
+
+        // .nomedia 目录扫描需要 MANAGE_EXTERNAL_STORAGE
+        if (includeNoMediaDirectories && hasManageExternalStorageAccess()) {
+            val noMediaVideos = context.getStorageVolumes().flatMap { volume ->
+                volume.collectNoMediaVideos()
+            }
+            if (noMediaVideos.isNotEmpty()) {
+                Logger.logInfo(TAG, "Found ${noMediaVideos.size} videos inside .nomedia directories")
+                additionalVideos.addAll(noMediaVideos)
+            }
+        }
+
+        // 公有目录中未被 MediaStore 收录的视频
+        val unindexedVideos = context.getStorageVolumes().flatMap { volume ->
+            volume.collectUnindexedVideos(indexedPaths)
+        }
+        if (unindexedVideos.isNotEmpty()) {
+            Logger.logInfo(TAG, "Found ${unindexedVideos.size} unindexed videos on file system")
+            additionalVideos.addAll(unindexedVideos)
+        }
+
+        if (additionalVideos.isEmpty()) {
             return@withContext mediaStoreVideos
         }
 
-        if (!hasManageExternalStorageAccess()) {
-            Logger.logInfo(TAG, "Skipping .nomedia scan because all files access is not granted")
-            return@withContext mediaStoreVideos
-        }
-
-        val noMediaVideos = context.getStorageVolumes().flatMap { volume ->
-            volume.collectNoMediaVideos()
-        }
-        if (noMediaVideos.isEmpty()) {
-            return@withContext mediaStoreVideos
-        }
-
-        Logger.logInfo(TAG, "Found ${noMediaVideos.size} videos inside .nomedia directories")
-        return@withContext (mediaStoreVideos + noMediaVideos)
+        return@withContext (mediaStoreVideos + additionalVideos)
             .distinctBy(MediaVideo::data)
             .sortedBy(MediaVideo::data)
     }
@@ -306,6 +316,46 @@ class LocalMediaSynchronizer @Inject constructor(
         }
 
         return currentDirectoryVideos + nestedVideos
+    }
+
+    // 在公有目录中查找不在 MediaStore 中的视频文件
+    private fun File.collectUnindexedVideos(indexedPaths: Set<String>): List<MediaVideo> {
+        if (!exists() || !isDirectory) return emptyList()
+        if (name.equals("Android", ignoreCase = true)) return emptyList()
+
+        val children = runCatching { listFiles()?.toList().orEmpty() }
+            .getOrElse { return emptyList() }
+
+        // .nomedia 目录由 collectNoMediaVideos 单独处理
+        val hasNoMedia = children.any {
+            it.isFile && it.name.equals(NO_MEDIA_FILE_NAME, ignoreCase = true)
+        }
+        if (hasNoMedia) return emptyList()
+
+        val unindexedVideos = children
+            .filter { it.isVisibleVideoFile() && it.path !in indexedPaths }
+            .mapNotNull { it.toBasicMediaVideo() }
+
+        val nestedVideos = children
+            .filter { it.isDirectory }
+            .flatMap { it.collectUnindexedVideos(indexedPaths) }
+
+        return unindexedVideos + nestedVideos
+    }
+
+    // 不使用 MediaMetadataRetriever，仅从文件属性构建轻量 MediaVideo
+    private fun File.toBasicMediaVideo(): MediaVideo? {
+        if (!exists() || !isFile) return null
+        return MediaVideo(
+            id = -path.hashCode().toLong().absoluteValue,
+            uri = toUri(),
+            size = length(),
+            width = 0,
+            height = 0,
+            data = path,
+            duration = 0L,
+            dateModified = lastModified(),
+        )
     }
 
     private fun File.isVisibleVideoFile(): Boolean {

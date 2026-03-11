@@ -28,7 +28,9 @@ import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import kotlin.coroutines.suspendCoroutine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.mozilla.universalchardet.UniversalDetector
 
 val VIDEO_COLLECTION_URI: Uri
@@ -164,7 +166,9 @@ fun Context.getFilenameFromContentUri(uri: Uri): String? {
 }
 
 fun Context.getMediaContentUri(uri: Uri): Uri? {
-    val path = getPath(uri) ?: return null
+    val rawPath = getPath(uri) ?: return null
+    // 解析符号链接，将 /sdcard 等别名映射到 /storage/emulated/0
+    val path = runCatching { File(rawPath).canonicalPath }.getOrDefault(rawPath)
 
     val column = MediaStore.Video.Media._ID
     val projection = arrayOf(column)
@@ -200,6 +204,28 @@ suspend fun Context.scanPaths(paths: List<String>): Boolean = suspendCoroutine {
         }
     } catch (e: Exception) {
         continuation.resumeWith(Result.failure(e))
+    }
+}
+
+// 扫描单个文件并从回调获取 content URI，超时返回 null
+suspend fun Context.scanFileForContentUri(
+    path: String,
+    timeoutMs: Long = 3000L,
+): Uri? = withContext(Dispatchers.IO) {
+    try {
+        withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine { continuation ->
+                MediaScannerConnection.scanFile(
+                    this@scanFileForContentUri,
+                    arrayOf(path),
+                    arrayOf("video/*"),
+                ) { _, uri ->
+                    continuation.resumeWith(Result.success(uri))
+                }
+            }
+        }
+    } catch (_: Exception) {
+        null
     }
 }
 

@@ -34,12 +34,14 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.AndroidEntryPoint
+import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import one.next.player.core.common.extensions.getMediaContentUri
+import one.next.player.core.common.extensions.scanFileForContentUri
 import one.next.player.core.model.ScreenOrientation
 import one.next.player.core.ui.theme.NextPlayerTheme
 import one.next.player.feature.player.extensions.registerForSuspendActivityResult
@@ -204,8 +206,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private suspend fun playVideo(uri: Uri) = withContext(Dispatchers.Default) {
-        val mediaContentUri = getMediaContentUri(uri)
-        val playbackUri = mediaContentUri ?: uri
+        val playbackUri = resolvePlaybackUri(uri)
         val playlist = playerApi.getPlaylist().takeIf { it.isNotEmpty() }
             ?: viewModel.getPlaylistFromUri(playbackUri)
                 .map { it.uriString }
@@ -250,6 +251,23 @@ class PlayerActivity : AppCompatActivity() {
                 prepare()
             }
         }
+    }
+
+    // file:// URI 在 scoped storage 下无法直接读取，需要逐级回退解析
+    private suspend fun resolvePlaybackUri(uri: Uri): Uri {
+        getMediaContentUri(uri)?.let { return it }
+        if (uri.scheme != "file") return uri
+        val rawPath = uri.path ?: return uri
+        val canonicalPath = runCatching { File(rawPath).canonicalPath }.getOrDefault(rawPath)
+
+        scanFileForContentUri(canonicalPath)?.let { return it }
+
+        // 规范路径兜底，公有目录 READ_MEDIA_VIDEO 即可读取
+        if (File(canonicalPath).exists()) {
+            return Uri.fromFile(File(canonicalPath))
+        }
+
+        return uri
     }
 
     private fun playbackStateListener() = object : Player.Listener {
