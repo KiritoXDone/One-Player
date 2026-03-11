@@ -98,7 +98,9 @@ class LocalMediaInfoSynchronizer @Inject constructor(
 
         var updatedMedium = mediumEntity
 
-        if (needsLightweightMetadata) {
+        // 仅在已有完整 MediaInfo 时用 MediaMetadataRetriever 补全基础元数据
+        // 需完整 MediaInfo 时从 FFmpeg 结果提取，避免 MediaMetadataRetriever 在大文件上阻塞
+        if (needsLightweightMetadata && !needsFullMediaInfo) {
             extractBasicMetadata(uri)?.let { basicMetadata ->
                 updatedMedium = updatedMedium.copy(
                     duration = basicMetadata.duration ?: updatedMedium.duration,
@@ -106,27 +108,30 @@ class LocalMediaInfoSynchronizer @Inject constructor(
                     height = basicMetadata.height ?: updatedMedium.height,
                 )
             }
-        }
-
-        if (!needsFullMediaInfo) {
             if (updatedMedium != mediumEntity) {
                 mediumDao.upsert(updatedMedium)
             }
             return
         }
+
+        if (!needsFullMediaInfo) return
 
         val mediaInfo = runCatching {
             MediaInfoBuilder().from(context = context, uri = uri).build() ?: throw NullPointerException()
         }.onFailure { throwable ->
             Logger.logError(TAG, "Failed to read media info for $uri", throwable)
-        }.getOrNull() ?: run {
-            if (updatedMedium != mediumEntity) {
-                mediumDao.upsert(updatedMedium)
-            }
-            return
-        }
+        }.getOrNull() ?: return
 
         try {
+            // 从 FFmpeg 结果补全基础元数据
+            if (needsLightweightMetadata) {
+                updatedMedium = updatedMedium.copy(
+                    duration = mediaInfo.duration.takeIf { it > 0 } ?: updatedMedium.duration,
+                    width = mediaInfo.videoStream?.frameWidth?.takeIf { it > 0 } ?: updatedMedium.width,
+                    height = mediaInfo.videoStream?.frameHeight?.takeIf { it > 0 } ?: updatedMedium.height,
+                )
+            }
+
             val videoStreamInfo = mediaInfo.videoStream?.toVideoStreamInfoEntity(updatedMedium.uriString)
             val audioStreamsInfo = mediaInfo.audioStreams.map {
                 it.toAudioStreamInfoEntity(updatedMedium.uriString)

@@ -53,6 +53,7 @@ class LocalMediaSynchronizer @Inject constructor(
     private val directoryDao: DirectoryDao,
     private val imageLoader: ImageLoader,
     private val appPreferencesDataSource: AppPreferencesDataSource,
+    private val mediaInfoSynchronizer: MediaInfoSynchronizer,
     @ApplicationScope private val applicationScope: CoroutineScope,
     @ApplicationContext private val context: Context,
     @Dispatcher(NextDispatchers.IO) private val dispatcher: CoroutineDispatcher,
@@ -130,7 +131,10 @@ class LocalMediaSynchronizer @Inject constructor(
         }.onEach { media ->
             Logger.logInfo(TAG, "onEach syncing ${media.size} media entries")
             applicationScope.launch { updateDirectories(media) }
-            applicationScope.launch { updateMedia(media) }
+            applicationScope.launch {
+                updateMedia(media)
+                scheduleMediaInfoSync()
+            }
         }.launchIn(applicationScope)
     }
 
@@ -250,9 +254,9 @@ class LocalMediaSynchronizer @Inject constructor(
                 path = file.path,
                 name = file.name,
                 size = mediaVideo.size,
-                width = mediaVideo.width,
-                height = mediaVideo.height,
-                duration = mediaVideo.duration,
+                width = mediaVideo.width.takeIf { it > 0 } ?: mediumEntity.width,
+                height = mediaVideo.height.takeIf { it > 0 } ?: mediumEntity.height,
+                duration = mediaVideo.duration.takeIf { it > 0 } ?: mediumEntity.duration,
                 mediaStoreId = mediaVideo.id,
                 modified = mediaVideo.dateModified,
                 parentPath = parentPath,
@@ -307,6 +311,19 @@ class LocalMediaSynchronizer @Inject constructor(
                         Logger.logError(TAG, "Failed to release subtitle permission for $sub", throwable)
                     }
                 }
+            }
+        }
+    }
+
+    // 对缺少元数据的媒体自动排队 MediaInfo 同步
+    private suspend fun scheduleMediaInfoSync() {
+        val allWithInfo = mediumDao.getAllWithInfo().first()
+        allWithInfo.forEach { mediumWithInfo ->
+            val entity = mediumWithInfo.mediumEntity
+            val needsMetadata = entity.duration <= 0 || entity.width <= 0 || entity.height <= 0
+            val needsStreamInfo = mediumWithInfo.videoStreamInfo == null
+            if (needsMetadata || needsStreamInfo) {
+                mediaInfoSynchronizer.sync(entity.uriString.toUri())
             }
         }
     }
