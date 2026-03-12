@@ -250,7 +250,7 @@ class LocalMediaService @Inject constructor(
     }
 
     companion object {
-        private const val RECYCLE_BIN_FOLDER_NAME = "_.bin"
+        private const val RECYCLE_BIN_FOLDER_NAME = ".bin"
         private const val RECYCLE_BIN_RELATIVE_PATH = "Movies/$RECYCLE_BIN_FOLDER_NAME"
         private const val RECYCLE_BIN_EXTENSION = "optrash"
         private const val RECYCLE_BIN_MIME_TYPE = "application/octet-stream"
